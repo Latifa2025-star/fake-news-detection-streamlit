@@ -1,1 +1,1 @@
-# fake-news-detection-streamlit
+fake-news-analytics-bert-streamlit
