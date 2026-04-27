@@ -445,29 +445,130 @@ elif page == "Model Dashboard":
 # Four Analytics
 # =============================
 elif page == "Four Analytics":
+
     st.title("Four Analytics Framework")
 
-    st.subheader("1. Descriptive Analytics — What happened?")
-    st.write(
-        "The WELFake dataset contains more than 72,000 labeled news articles. "
-        "After cleaning, the model was trained on full article content created by combining titles and article text."
-    )
+    st.header("1. Descriptive Analytics — What happened?")
 
-    st.subheader("2. Diagnostic Analytics — Why did it happen?")
-    st.write(
-        "Many articles are longer than BERT's 512-token limit. Chunking was used to solve this problem by splitting long articles into smaller BERT-compatible segments."
-    )
+    st.write("""
+    The WELFake dataset used in this project contains more than **72,000 labeled news articles** classified as real or fake news. 
+    After cleaning the dataset and removing missing values, the final dataset used for training contained approximately **71,500 articles**.
 
-    st.subheader("3. Predictive Analytics — What is likely to happen?")
-    st.write(
-        "The fine-tuned BERT model predicts whether an article is real or fake using document-level probability aggregation across chunks."
-    )
+    Each article was constructed by combining the **title and full article text**, allowing the model to analyze complete news content 
+    rather than isolated headlines.
 
-    st.subheader("4. Prescriptive Analytics — What should be done?")
-    st.write(
-        "Predictions are converted into risk categories and recommended actions: low risk requires no action, medium risk requires human review, and high risk requires immediate fact-checking."
-    )
+    The dataset was split using **stratified sampling** into:
 
+    • Training set — 70%  
+    • Validation set — 15%  
+    • Test set — 15%
+
+    After preprocessing and tokenization, the dataset expanded into chunk-level samples:
+
+    • Training chunks: ~15,386  
+    • Validation chunks: ~3,817  
+    • Test chunks: ~3,896  
+
+    The BERT model (bert-base-uncased) was fine-tuned on these chunks using the following hyperparameters:
+
+    • Learning rate: 2e-5  
+    • Batch size: 8  
+    • Epochs tested: 2 and 3  
+    • Weight decay: 0.01  
+
+    Final evaluation results achieved approximately:
+
+    • Accuracy: 96.38%  
+    • Precision: 96.63%  
+    • Recall: 95.75%  
+    • F1 Score: 96.19%
+
+    These results demonstrate strong performance in identifying linguistic patterns associated with misinformation.
+    """)
+
+    st.header("2. Diagnostic Analytics — Why did it happen?")
+
+    st.write("""
+    During dataset analysis, a key challenge emerged: **BERT has a maximum input length of 512 tokens**, while many real-world 
+    news articles are significantly longer.
+
+    When articles exceed this limit, BERT would normally truncate the text, potentially removing important contextual information.
+
+    To address this limitation, the project implemented a **chunk-based document processing strategy**.
+
+    The process works as follows:
+
+    1. Articles are tokenized using the BERT tokenizer.
+    2. Articles longer than 512 tokens are split into smaller segments (chunks).
+    3. Each chunk is processed independently by the BERT classifier.
+    4. Predictions from all chunks are aggregated to produce a final document-level probability.
+
+    This approach ensures that **the entire article is analyzed**, rather than only the first portion of the text.
+
+    Diagnostic evaluation through the confusion matrix showed strong performance:
+
+    • 974 real articles correctly classified  
+    • 1004 fake articles correctly classified  
+    • 12 real articles misclassified as fake  
+    • 10 fake articles misclassified as real  
+
+    These results confirm that the chunking strategy successfully preserves contextual information needed for accurate predictions.
+    """)
+
+    st.header("3. Predictive Analytics — What is likely to happen?")
+
+    st.write("""
+    Predictive analytics focuses on estimating the likelihood that a new article contains misinformation.
+
+    When a user submits an article through the application:
+
+    1. The article text is tokenized using the BERT tokenizer.
+    2. Long articles are divided into **512-token chunks**.
+    3. Each chunk is analyzed by the fine-tuned BERT classifier.
+    4. The model outputs probabilities for both classes:
+       • Real news probability
+       • Fake news probability
+    5. Probabilities across all chunks are averaged to produce a **final document-level prediction**.
+
+    For example, when testing a clearly misleading article about a miracle cure, the model produced:
+
+    • Fake probability: 99.98%  
+    • Real probability: 0.02%
+
+    The system therefore classified the article as **Fake News** with extremely high confidence.
+
+    This predictive capability allows the system to analyze new articles in real time and estimate the probability of misinformation.
+    """)
+
+    st.header("4. Prescriptive Analytics — What should be done?")
+
+    st.write("""
+    Prescriptive analytics converts predictions into **actionable recommendations**.
+
+    The system uses a configurable **fake news probability threshold** (default = 0.50) to determine classification outcomes.
+
+    Based on the predicted probability, the system assigns a risk category:
+
+    • Low Risk (Fake probability < 0.50)  
+      → Article likely legitimate, no action required.
+
+    • Medium Risk (0.50 – 0.75)  
+      → Article may require **human review**.
+
+    • High Risk (> 0.75)  
+      → Article likely misinformation, **immediate fact-checking recommended**.
+
+    For example, the system flagged a test article claiming a miracle cure as **High Risk**, recommending immediate verification.
+
+    This prescriptive layer transforms the predictive model into a **decision-support system** that can assist:
+
+    • news organizations  
+    • social media platforms  
+    • fact-checking agencies  
+    • content moderation teams
+
+    in prioritizing which articles should be reviewed for misinformation.
+    """)
 # =============================
 # About
 # =============================
