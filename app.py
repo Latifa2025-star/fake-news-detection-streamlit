@@ -1,163 +1,125 @@
 import os
-from dataclasses import dataclass
-from typing import List, Dict, Tuple
+from typing import Dict, List, Tuple
 
 import numpy as np
 import pandas as pd
-import streamlit as st
 import plotly.express as px
 import plotly.graph_objects as go
-from sklearn.metrics import confusion_matrix
+import streamlit as st
+import torch
+from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
-# Optional ML dependencies
-try:
-    import torch
-    from transformers import AutoTokenizer, AutoModelForSequenceClassification
-    TRANSFORMERS_AVAILABLE = True
-except Exception:
-    TRANSFORMERS_AVAILABLE = False
-
-
-# -----------------------------
-# App Configuration
-# -----------------------------
+# =============================
+# Page setup
+# =============================
 st.set_page_config(
-    page_title="Fake News Analytics Studio",
+    page_title="Fake News Detection AI",
     page_icon="🧠",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
-
-# -----------------------------
-# Styling
-# -----------------------------
+# =============================
+# Custom CSS
+# =============================
 st.markdown(
     """
     <style>
-        .main {padding-top: 1rem;}
-        .block-container {padding-top: 1.2rem; padding-bottom: 2rem;}
-        .metric-card {
-            background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
-            padding: 1rem;
-            border-radius: 16px;
-            border: 1px solid rgba(255,255,255,0.08);
-        }
-        .section-card {
-            background: #111827;
-            border-radius: 18px;
-            padding: 1rem 1.25rem;
-            border: 1px solid rgba(255,255,255,0.08);
-        }
-        .small-muted {color: #9ca3af; font-size: 0.95rem;}
-        .stAlert {border-radius: 14px;}
+    .block-container {padding-top: 1.3rem; padding-bottom: 2rem;}
+    .main-title {
+        font-size: 2.6rem;
+        font-weight: 800;
+        margin-bottom: 0rem;
+    }
+    .subtitle {
+        color: #6b7280;
+        font-size: 1.05rem;
+        margin-bottom: 1.2rem;
+    }
+    .card {
+        padding: 1.1rem;
+        border-radius: 18px;
+        border: 1px solid rgba(120,120,120,0.18);
+        background: rgba(250,250,250,0.04);
+    }
+    .good {color: #16a34a; font-weight: 800;}
+    .bad {color: #dc2626; font-weight: 800;}
+    .medium {color: #d97706; font-weight: 800;}
     </style>
     """,
     unsafe_allow_html=True,
 )
 
-
-# -----------------------------
-# Constants / Defaults
-# -----------------------------
-MODEL_DIR = os.getenv("MODEL_DIR", "./bert_fake_news")
+# =============================
+# Constants
+# =============================
+MODEL_NAME = "laitali2026/fake-news-bert-model"
 MAX_LEN = 512
-CHUNK_TEXT_TOKENS = 510  # reserve [CLS] and [SEP]
 DEFAULT_THRESHOLD = 0.50
 
+MODEL_METRICS = {
+    "Accuracy": 0.9638,
+    "Precision": 0.9663,
+    "Recall": 0.9575,
+    "F1 Score": 0.9619,
+}
 
-@dataclass
-class AppMetrics:
-    accuracy: float = 0.9638
-    precision: float = 0.9663
-    recall: float = 0.9575
-    f1: float = 0.9619
-    eval_loss: float = 0.2455
+TRAINING_HISTORY = pd.DataFrame(
+    {
+        "Epoch": [1, 2, 3],
+        "Training Loss": [0.157617, 0.065196, 0.011758],
+        "Validation Loss": [0.168930, 0.209829, 0.243374],
+        "Accuracy": [0.957820, 0.959916, 0.961750],
+        "Precision": [0.943796, 0.971942, 0.957228],
+        "Recall": [0.970027, 0.943869, 0.963488],
+        "F1": [0.956732, 0.957700, 0.960348],
+    }
+)
 
+CONFUSION_MATRIX = pd.DataFrame(
+    [[974, 12], [10, 1004]],
+    index=["Actual Real", "Actual Fake"],
+    columns=["Predicted Real", "Predicted Fake"],
+)
 
-DEFAULT_METRICS = AppMetrics()
-
-
-# -----------------------------
-# Helper Data
-# -----------------------------
-def get_training_history() -> pd.DataFrame:
-    return pd.DataFrame(
-        {
-            "epoch": [1, 2, 3],
-            "training_loss": [0.157617, 0.065196, 0.011758],
-            "validation_loss": [0.168930, 0.209829, 0.243374],
-            "accuracy": [0.957820, 0.959916, 0.961750],
-            "precision": [0.943796, 0.971942, 0.957228],
-            "recall": [0.970027, 0.943869, 0.963488],
-            "f1": [0.956732, 0.957700, 0.960348],
-        }
-    )
-
-
-def get_confusion_matrix_df() -> pd.DataFrame:
-    # From notebook example shown earlier
-    cm = np.array([[974, 12], [10, 1004]])
-    return pd.DataFrame(cm, index=["Actual Real", "Actual Fake"], columns=["Pred Real", "Pred Fake"])
-
-
-def get_sample_predictions() -> pd.DataFrame:
-    return pd.DataFrame(
-        {
-            "headline": [
-                "Authorities deny viral claim about election machines",
-                "Scientists publish peer-reviewed climate update",
-                "Celebrity shock story spreads without source links",
-                "Government budget report released with official PDF",
-            ],
-            "predicted_label": ["Real", "Real", "Fake", "Real"],
-            "fake_probability": [0.08, 0.03, 0.91, 0.12],
-            "risk_category": ["Low", "Low", "High", "Low"],
-            "action": ["No action", "No action", "Immediate fact-check", "No action"],
-        }
-    )
+# =============================
+# Model loading
+# =============================
+@st.cache_resource(show_spinner=True)
+def load_model():
+    tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
+    model = AutoModelForSequenceClassification.from_pretrained(MODEL_NAME)
+    model.eval()
+    return tokenizer, model
 
 
-# -----------------------------
-# Model Utilities
-# -----------------------------
-@st.cache_resource(show_spinner=False)
-def load_model_bundle(model_dir: str):
-    if not TRANSFORMERS_AVAILABLE:
-        return None, None, "Transformers not installed in this environment."
-
-    if not os.path.exists(model_dir):
-        return None, None, f"Model directory not found: {model_dir}"
-
-    try:
-        tokenizer = AutoTokenizer.from_pretrained(model_dir)
-        model = AutoModelForSequenceClassification.from_pretrained(model_dir)
-        model.eval()
-        return tokenizer, model, None
-    except Exception as exc:
-        return None, None, f"Failed to load model: {exc}"
-
-
-def split_into_chunks(text: str, tokenizer, max_len: int = MAX_LEN) -> List[List[int]]:
+def chunk_document(text: str, tokenizer, max_len: int = MAX_LEN) -> List[List[int]]:
     token_ids = tokenizer.encode(str(text), add_special_tokens=False, truncation=False)
     chunk_size = max_len - 2
     chunks = []
+
     for i in range(0, len(token_ids), chunk_size):
-        chunk_tokens = token_ids[i:i + chunk_size]
+        chunk_tokens = token_ids[i : i + chunk_size]
         chunk_tokens = [tokenizer.cls_token_id] + chunk_tokens + [tokenizer.sep_token_id]
         chunks.append(chunk_tokens)
-    return chunks if chunks else [[tokenizer.cls_token_id, tokenizer.sep_token_id]]
+
+    if len(chunks) == 0:
+        chunks = [[tokenizer.cls_token_id, tokenizer.sep_token_id]]
+
+    return chunks
 
 
-def run_chunk_inference(text: str, tokenizer, model) -> Dict:
-    chunks = split_into_chunks(text, tokenizer, max_len=MAX_LEN)
-    all_probs = []
+def predict_article(text: str, threshold: float) -> Dict:
+    tokenizer, model = load_model()
+    chunks = chunk_document(text, tokenizer)
+    fake_probs = []
 
     for chunk in chunks:
         attention_mask = [1] * len(chunk)
-        pad_len = MAX_LEN - len(chunk)
-        input_ids = chunk + [tokenizer.pad_token_id] * pad_len
-        attention_mask = attention_mask + [0] * pad_len
+        pad_length = MAX_LEN - len(chunk)
+
+        input_ids = chunk + [tokenizer.pad_token_id] * pad_length
+        attention_mask = attention_mask + [0] * pad_length
 
         inputs = {
             "input_ids": torch.tensor([input_ids]),
@@ -167,374 +129,370 @@ def run_chunk_inference(text: str, tokenizer, model) -> Dict:
         with torch.no_grad():
             logits = model(**inputs).logits
             probs = torch.softmax(logits, dim=1).cpu().numpy()[0]
-            all_probs.append(probs)
+            fake_probs.append(float(probs[1]))
 
-    chunk_probs = np.array(all_probs)
-    avg_probs = chunk_probs.mean(axis=0)
-    fake_prob = float(avg_probs[1])
-    pred_label = int(fake_prob >= DEFAULT_THRESHOLD)
+    avg_fake_prob = float(np.mean(fake_probs))
+    max_fake_prob = float(np.max(fake_probs))
+    predicted_label = int(avg_fake_prob >= threshold)
+
+    risk = assign_risk(avg_fake_prob)
+    action = recommend_action(risk)
 
     return {
-        "pred_label": pred_label,
-        "fake_probability": fake_prob,
-        "real_probability": float(avg_probs[0]),
+        "prediction": "Fake News" if predicted_label == 1 else "Real News",
+        "predicted_label": predicted_label,
+        "fake_probability": avg_fake_prob,
+        "real_probability": 1 - avg_fake_prob,
+        "max_fake_probability": max_fake_prob,
         "num_chunks": len(chunks),
-        "chunk_fake_probs": chunk_probs[:, 1].tolist(),
+        "chunk_fake_probs": fake_probs,
+        "risk": risk,
+        "action": action,
     }
 
 
 def assign_risk(prob: float) -> str:
     if prob >= 0.75:
-        return "High"
+        return "High Risk"
     if prob >= 0.50:
-        return "Medium"
-    return "Low"
+        return "Medium Risk"
+    return "Low Risk"
 
 
 def recommend_action(risk: str) -> str:
-    if risk == "High":
-        return "Immediate fact-check"
-    if risk == "Medium":
-        return "Human review"
-    return "No action"
+    if risk == "High Risk":
+        return "Immediate fact-checking recommended"
+    if risk == "Medium Risk":
+        return "Send to human reviewer"
+    return "No immediate action needed"
 
 
-def heuristic_predict(text: str) -> Dict:
-    suspicious_terms = [
-        "shocking", "must read", "they don't want you to know", "viral",
-        "breaking", "exposed", "secret", "miracle", "hoax", "cover-up",
-    ]
-    text_l = text.lower()
-    score = 0.08
-    for term in suspicious_terms:
-        if term in text_l:
-            score += 0.12
-    if text.isupper():
-        score += 0.10
-    if text.count("!") >= 3:
-        score += 0.10
-    score = min(score, 0.95)
-    return {
-        "pred_label": int(score >= DEFAULT_THRESHOLD),
-        "fake_probability": score,
-        "real_probability": 1 - score,
-        "num_chunks": max(1, len(text.split()) // 380 + 1),
-        "chunk_fake_probs": [score],
-    }
+def probability_gauge(fake_prob: float, threshold: float):
+    fig = go.Figure(
+        go.Indicator(
+            mode="gauge+number",
+            value=fake_prob * 100,
+            number={"suffix": "%"},
+            title={"text": "Fake News Probability"},
+            gauge={
+                "axis": {"range": [0, 100]},
+                "bar": {"color": "#dc2626" if fake_prob >= threshold else "#16a34a"},
+                "steps": [
+                    {"range": [0, 50], "color": "rgba(22,163,74,0.25)"},
+                    {"range": [50, 75], "color": "rgba(245,158,11,0.25)"},
+                    {"range": [75, 100], "color": "rgba(220,38,38,0.25)"},
+                ],
+                "threshold": {
+                    "line": {"color": "black", "width": 4},
+                    "thickness": 0.75,
+                    "value": threshold * 100,
+                },
+            },
+        )
+    )
+    fig.update_layout(height=330, margin=dict(l=20, r=20, t=40, b=20))
+    return fig
 
 
-def predict_document(text: str, model_dir: str) -> Tuple[Dict, str]:
-    tokenizer, model, err = load_model_bundle(model_dir)
-    if tokenizer is not None and model is not None:
-        return run_chunk_inference(text, tokenizer, model), "model"
-    return heuristic_predict(text), f"heuristic ({err})"
+def chunk_chart(chunk_probs: List[float]):
+    df = pd.DataFrame(
+        {
+            "Chunk": list(range(1, len(chunk_probs) + 1)),
+            "Fake Probability": chunk_probs,
+        }
+    )
+    fig = px.bar(
+        df,
+        x="Chunk",
+        y="Fake Probability",
+        text=df["Fake Probability"].map(lambda x: f"{x:.2f}"),
+        range_y=[0, 1],
+        title="Chunk-Level Fake News Probability",
+    )
+    fig.update_traces(marker_color="#dc2626")
+    fig.update_layout(height=360)
+    return fig
 
-
-# -----------------------------
+# =============================
 # Sidebar
-# -----------------------------
-st.sidebar.title("🧠 Fake News Analytics Studio")
-st.sidebar.caption("Chunk-based BERT + document-level aggregation")
+# =============================
+st.sidebar.title("🧠 Fake News AI")
+st.sidebar.caption("BERT + chunk-based full-document analytics")
 
 page = st.sidebar.radio(
     "Navigation",
     [
-        "Overview",
+        "Home",
         "Single Article Prediction",
         "Batch Prediction",
-        "Model Analytics",
-        "Data Story",
-        "About Deployment",
+        "Model Dashboard",
+        "Four Analytics",
+        "About",
     ],
 )
 
-model_dir_input = st.sidebar.text_input("Model directory", value=MODEL_DIR)
+threshold = st.sidebar.slider(
+    "Fake News Threshold",
+    min_value=0.30,
+    max_value=0.90,
+    value=DEFAULT_THRESHOLD,
+    step=0.05,
+)
+
 st.sidebar.markdown("---")
-st.sidebar.write("**Current threshold**")
-threshold = st.sidebar.slider("Fake probability threshold", 0.30, 0.90, DEFAULT_THRESHOLD, 0.05)
-DEFAULT_THRESHOLD = threshold
+st.sidebar.write("**Model:**")
+st.sidebar.code(MODEL_NAME)
 
-
-# -----------------------------
-# Overview
-# -----------------------------
-if page == "Overview":
-    st.title("Fake News Detection Web App")
-    st.caption("A smart Streamlit dashboard for fake news classification, analytics, and decision support.")
+# =============================
+# Home
+# =============================
+if page == "Home":
+    st.markdown('<div class="main-title">Fake News Detection AI Dashboard</div>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="subtitle">A Streamlit web app using a fine-tuned BERT model with chunk-based document processing.</div>',
+        unsafe_allow_html=True,
+    )
 
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Accuracy", f"{DEFAULT_METRICS.accuracy:.2%}")
-    c2.metric("Precision", f"{DEFAULT_METRICS.precision:.2%}")
-    c3.metric("Recall", f"{DEFAULT_METRICS.recall:.2%}")
-    c4.metric("F1 Score", f"{DEFAULT_METRICS.f1:.2%}")
+    c1.metric("Accuracy", f"{MODEL_METRICS['Accuracy']:.2%}")
+    c2.metric("Precision", f"{MODEL_METRICS['Precision']:.2%}")
+    c3.metric("Recall", f"{MODEL_METRICS['Recall']:.2%}")
+    c4.metric("F1 Score", f"{MODEL_METRICS['F1 Score']:.2%}")
 
     st.markdown("---")
-    left, right = st.columns([1.3, 1])
 
+    left, right = st.columns([1.2, 1])
     with left:
-        st.subheader("What this app does")
-        st.markdown(
-            """
-            - Classifies news articles as **Real** or **Fake**
-            - Supports **full-document prediction** using chunking for long articles
-            - Shows **risk level** and **recommended action**
-            - Includes **model analytics**, training history, and confidence visualizations
-            - Supports **single prediction** and **CSV batch inference**
-            """
+        st.subheader("Project Overview")
+        st.write(
+            "This application detects fake news articles using a fine-tuned BERT transformer model. "
+            "Because BERT can only process 512 tokens at a time, long articles are split into chunks, "
+            "classified chunk-by-chunk, and then aggregated into one final document-level prediction."
+        )
+        st.write(
+            "The app supports real-time prediction, batch CSV prediction, model performance analytics, "
+            "and prescriptive recommendations for content moderation."
         )
 
     with right:
-        sample_df = get_sample_predictions()
-        st.subheader("Example outputs")
-        st.dataframe(sample_df, use_container_width=True, hide_index=True)
+        st.subheader("Pipeline")
+        st.markdown(
+            """
+            1. Enter or upload article text  
+            2. Tokenize using BERT tokenizer  
+            3. Split long text into 512-token chunks  
+            4. Predict each chunk  
+            5. Average chunk probabilities  
+            6. Assign risk level and action
+            """
+        )
 
-
-# -----------------------------
-# Single Prediction
-# -----------------------------
+# =============================
+# Single Article Prediction
+# =============================
 elif page == "Single Article Prediction":
     st.title("Single Article Prediction")
-    st.caption("Paste a news article or headline + article body. The app predicts fake-news probability and suggested action.")
+    st.caption("Paste a full news article or headline + body text.")
 
-    user_text = st.text_area(
-        "Article content",
-        height=280,
-        placeholder="Paste article title and body here...",
-    )
+    article_text = st.text_area("Article Text", height=300, placeholder="Paste article content here...")
 
-    col_a, col_b = st.columns([1, 5])
-    predict_clicked = col_a.button("Predict", type="primary")
-    clear_clicked = col_b.button("Load sample article")
-
-    if clear_clicked and not user_text:
-        st.info("Paste sample text manually or click Predict after entering content.")
-
-    if predict_clicked:
-        if not user_text.strip():
-            st.warning("Please paste article content first.")
+    if st.button("Analyze Article", type="primary"):
+        if not article_text.strip():
+            st.warning("Please paste an article first.")
         else:
-            with st.spinner("Running inference..."):
-                result, mode = predict_document(user_text, model_dir_input)
+            with st.spinner("Loading BERT and analyzing article..."):
+                result = predict_article(article_text, threshold)
 
-            risk = assign_risk(result["fake_probability"])
-            action = recommend_action(risk)
-            label_text = "Fake" if result["pred_label"] == 1 else "Real"
+            label_color = "bad" if result["predicted_label"] == 1 else "good"
+            st.markdown(
+                f"### Prediction: <span class='{label_color}'>{result['prediction']}</span>",
+                unsafe_allow_html=True,
+            )
 
             m1, m2, m3, m4 = st.columns(4)
-            m1.metric("Prediction", label_text)
-            m2.metric("Fake probability", f"{result['fake_probability']:.2%}")
-            m3.metric("Risk level", risk)
-            m4.metric("Chunks used", result["num_chunks"])
+            m1.metric("Fake Probability", f"{result['fake_probability']:.2%}")
+            m2.metric("Real Probability", f"{result['real_probability']:.2%}")
+            m3.metric("Risk Level", result["risk"])
+            m4.metric("Chunks Used", result["num_chunks"])
 
-            st.success(f"Inference mode: **{mode}**")
+            st.plotly_chart(probability_gauge(result["fake_probability"], threshold), use_container_width=True)
 
-            gauge = go.Figure(go.Indicator(
-                mode="gauge+number",
-                value=result["fake_probability"] * 100,
-                title={"text": "Fake News Probability"},
-                gauge={
-                    "axis": {"range": [0, 100]},
-                    "steps": [
-                        {"range": [0, 50], "color": "rgba(34,197,94,0.35)"},
-                        {"range": [50, 75], "color": "rgba(250,204,21,0.35)"},
-                        {"range": [75, 100], "color": "rgba(239,68,68,0.35)"},
-                    ],
-                    "threshold": {"line": {"color": "white", "width": 3}, "thickness": 0.8, "value": DEFAULT_THRESHOLD * 100},
+            st.subheader("Recommended Action")
+            if result["risk"] == "High Risk":
+                st.error(result["action"])
+            elif result["risk"] == "Medium Risk":
+                st.warning(result["action"])
+            else:
+                st.success(result["action"])
+
+            st.subheader("Chunk-Level Analysis")
+            st.plotly_chart(chunk_chart(result["chunk_fake_probs"]), use_container_width=True)
+
+            chunk_df = pd.DataFrame(
+                {
+                    "Chunk": list(range(1, len(result["chunk_fake_probs"]) + 1)),
+                    "Fake Probability": result["chunk_fake_probs"],
                 }
-            ))
-            gauge.update_layout(height=320, margin=dict(l=20, r=20, t=50, b=20))
-            st.plotly_chart(gauge, use_container_width=True)
+            )
+            st.dataframe(chunk_df, use_container_width=True, hide_index=True)
 
-            c1, c2 = st.columns([1.2, 1])
-            with c1:
-                st.subheader("Recommended action")
-                st.info(action)
-                st.markdown(
-                    f"**Why this matters:** with a threshold of **{DEFAULT_THRESHOLD:.2f}**, this article is classified as **{label_text}** and assigned **{risk} risk**."
-                )
-
-            with c2:
-                st.subheader("Chunk-level fake probabilities")
-                chunk_df = pd.DataFrame({
-                    "chunk": list(range(1, len(result["chunk_fake_probs"]) + 1)),
-                    "fake_probability": result["chunk_fake_probs"],
-                })
-                fig = px.bar(chunk_df, x="chunk", y="fake_probability", range_y=[0, 1])
-                fig.update_layout(height=300, margin=dict(l=20, r=20, t=20, b=20))
-                st.plotly_chart(fig, use_container_width=True)
-
-
-# -----------------------------
+# =============================
 # Batch Prediction
-# -----------------------------
+# =============================
 elif page == "Batch Prediction":
     st.title("Batch Prediction")
-    st.caption("Upload a CSV with a text column and generate predictions in bulk.")
+    st.caption("Upload a CSV file and predict many articles at once.")
 
-    uploaded = st.file_uploader("Upload CSV", type=["csv"])
-    text_col = st.text_input("Name of text column", value="content")
+    uploaded_file = st.file_uploader("Upload CSV", type=["csv"])
 
-    if uploaded is not None:
-        batch_df = pd.read_csv(uploaded)
-        st.write("Preview")
-        st.dataframe(batch_df.head(), use_container_width=True)
+    if uploaded_file is not None:
+        data = pd.read_csv(uploaded_file)
+        st.subheader("CSV Preview")
+        st.dataframe(data.head(), use_container_width=True)
 
-        if st.button("Run batch prediction", type="primary"):
-            if text_col not in batch_df.columns:
-                st.error(f"Column '{text_col}' not found in uploaded CSV.")
-            else:
-                outputs = []
-                progress = st.progress(0)
+        text_column = st.selectbox("Select text column", data.columns)
 
-                for idx, text in enumerate(batch_df[text_col].fillna("")):
-                    pred, _ = predict_document(str(text), model_dir_input)
-                    risk = assign_risk(pred["fake_probability"])
-                    action = recommend_action(risk)
-                    outputs.append(
-                        {
-                            "predicted_label": "Fake" if pred["pred_label"] == 1 else "Real",
-                            "fake_probability": pred["fake_probability"],
-                            "risk_category": risk,
-                            "recommended_action": action,
-                            "num_chunks": pred["num_chunks"],
-                        }
-                    )
-                    progress.progress((idx + 1) / len(batch_df))
+        max_rows = st.slider("Maximum rows to process", 1, min(100, len(data)), min(10, len(data)))
 
-                result_df = pd.concat([batch_df.reset_index(drop=True), pd.DataFrame(outputs)], axis=1)
-                st.success("Batch prediction completed.")
-                st.dataframe(result_df.head(20), use_container_width=True)
-                st.download_button(
-                    "Download results CSV",
-                    data=result_df.to_csv(index=False).encode("utf-8"),
-                    file_name="fake_news_predictions.csv",
-                    mime="text/csv",
+        if st.button("Run Batch Prediction", type="primary"):
+            results = []
+            progress = st.progress(0)
+
+            for i, text in enumerate(data[text_column].fillna("").astype(str).head(max_rows)):
+                pred = predict_article(text, threshold)
+                results.append(
+                    {
+                        "prediction": pred["prediction"],
+                        "fake_probability": pred["fake_probability"],
+                        "risk": pred["risk"],
+                        "recommended_action": pred["action"],
+                        "num_chunks": pred["num_chunks"],
+                    }
                 )
+                progress.progress((i + 1) / max_rows)
 
+            output = pd.concat([data.head(max_rows).reset_index(drop=True), pd.DataFrame(results)], axis=1)
+            st.success("Batch prediction completed.")
+            st.dataframe(output, use_container_width=True)
 
-# -----------------------------
-# Model Analytics
-# -----------------------------
-elif page == "Model Analytics":
-    st.title("Model Analytics")
-    history = get_training_history()
+            st.download_button(
+                "Download Results CSV",
+                output.to_csv(index=False).encode("utf-8"),
+                file_name="fake_news_predictions.csv",
+                mime="text/csv",
+            )
 
-    c1, c2 = st.columns(2)
-    with c1:
-        fig = px.line(history, x="epoch", y=["training_loss", "validation_loss"], markers=True)
-        fig.update_layout(title="Training vs Validation Loss", yaxis_title="Loss")
+# =============================
+# Model Dashboard
+# =============================
+elif page == "Model Dashboard":
+    st.title("Model Dashboard")
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Accuracy", f"{MODEL_METRICS['Accuracy']:.2%}")
+    c2.metric("Precision", f"{MODEL_METRICS['Precision']:.2%}")
+    c3.metric("Recall", f"{MODEL_METRICS['Recall']:.2%}")
+    c4.metric("F1 Score", f"{MODEL_METRICS['F1 Score']:.2%}")
+
+    st.markdown("---")
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        fig = px.line(
+            TRAINING_HISTORY,
+            x="Epoch",
+            y=["Training Loss", "Validation Loss"],
+            markers=True,
+            title="Training vs Validation Loss",
+        )
         st.plotly_chart(fig, use_container_width=True)
 
-    with c2:
-        fig = px.line(history, x="epoch", y=["accuracy", "f1", "precision", "recall"], markers=True)
-        fig.update_layout(title="Validation Metrics by Epoch", yaxis_title="Score")
+    with col2:
+        fig = px.line(
+            TRAINING_HISTORY,
+            x="Epoch",
+            y=["Accuracy", "Precision", "Recall", "F1"],
+            markers=True,
+            title="Validation Metrics by Epoch",
+        )
         st.plotly_chart(fig, use_container_width=True)
 
     st.subheader("Confusion Matrix")
-    cm_df = get_confusion_matrix_df()
-    fig = px.imshow(cm_df, text_auto=True, color_continuous_scale="Blues")
-    fig.update_layout(height=420)
+    fig = px.imshow(
+        CONFUSION_MATRIX,
+        text_auto=True,
+        color_continuous_scale="Blues",
+        title="Document-Level Confusion Matrix",
+    )
+    fig.update_layout(height=450)
     st.plotly_chart(fig, use_container_width=True)
 
-    st.subheader("Performance Summary")
-    perf_df = pd.DataFrame(
+    st.subheader("Hyperparameter Summary")
+    hp = pd.DataFrame(
         {
-            "metric": ["Accuracy", "Precision", "Recall", "F1 Score", "Eval Loss"],
-            "value": [
-                DEFAULT_METRICS.accuracy,
-                DEFAULT_METRICS.precision,
-                DEFAULT_METRICS.recall,
-                DEFAULT_METRICS.f1,
-                DEFAULT_METRICS.eval_loss,
-            ],
+            "Experiment": ["2 Epochs", "3 Epochs"],
+            "Batch Size": [8, 8],
+            "Accuracy": [0.9890, 0.9638],
+            "Precision": [0.9882, 0.9663],
+            "Recall": [0.9901, 0.9575],
+            "F1 Score": [0.9892, 0.9619],
         }
     )
-    fig = px.bar(perf_df, x="metric", y="value", text="value", range_y=[0, 1.05])
-    fig.update_traces(texttemplate="%{text:.3f}", textposition="outside")
-    st.plotly_chart(fig, use_container_width=True)
+    st.dataframe(hp, use_container_width=True, hide_index=True)
 
-
-# -----------------------------
-# Data Story
-# -----------------------------
-elif page == "Data Story":
-    st.title("Data Story & Analytics")
+# =============================
+# Four Analytics
+# =============================
+elif page == "Four Analytics":
+    st.title("Four Analytics Framework")
 
     st.subheader("1. Descriptive Analytics — What happened?")
     st.write(
-        "The WELFake dataset contains more than 72,000 news articles and is nearly balanced between real and fake news. "
-        "Article lengths vary widely, with many long articles exceeding BERT's 512-token limit."
+        "The WELFake dataset contains more than 72,000 labeled news articles. "
+        "After cleaning, the model was trained on full article content created by combining titles and article text."
     )
 
     st.subheader("2. Diagnostic Analytics — Why did it happen?")
     st.write(
-        "The main challenge was that standard BERT can only process 512 tokens per input. "
-        "To avoid truncating long articles, the app uses chunking and then aggregates chunk-level predictions into one final document decision."
+        "Many articles are longer than BERT's 512-token limit. Chunking was used to solve this problem by splitting long articles into smaller BERT-compatible segments."
     )
 
     st.subheader("3. Predictive Analytics — What is likely to happen?")
     st.write(
-        "The fine-tuned BERT model predicts whether a news article is real or fake. "
-        f"In prior experiments, the model achieved about {DEFAULT_METRICS.f1:.2%} F1-score on unseen test data."
+        "The fine-tuned BERT model predicts whether an article is real or fake using document-level probability aggregation across chunks."
     )
 
     st.subheader("4. Prescriptive Analytics — What should be done?")
     st.write(
-        "The app transforms probabilities into actions. Low-risk articles require no action, medium-risk articles are routed for human review, and high-risk articles are prioritized for immediate fact-checking."
+        "Predictions are converted into risk categories and recommended actions: low risk requires no action, medium risk requires human review, and high risk requires immediate fact-checking."
     )
 
-    st.subheader("Pipeline Overview")
+# =============================
+# About
+# =============================
+elif page == "About":
+    st.title("About This Project")
+    st.write(
+        "This project was developed as a master's-level data science project for fake news detection using NLP and deep learning. "
+        "It uses a fine-tuned BERT model trained on the WELFake dataset and deployed through Streamlit."
+    )
+
+    st.subheader("Technologies Used")
     st.markdown(
         """
-        1. Load article text  
-        2. Tokenize with BERT tokenizer  
-        3. Split long documents into chunks  
-        4. Score each chunk with BERT  
-        5. Average chunk probabilities  
-        6. Assign final label, risk, and action
+        - Python
+        - Streamlit
+        - Hugging Face Transformers
+        - PyTorch
+        - Plotly
+        - Pandas
+        - Scikit-learn
         """
     )
 
+    st.subheader("Model")
+    st.code(MODEL_NAME)
 
-# -----------------------------
-# Deployment Notes
-# -----------------------------
-elif page == "About Deployment":
-    st.title("GitHub + Streamlit Deployment Guide")
-    st.markdown(
-        """
-        ### Recommended repo structure
-        ```
-        fake-news-app/
-        ├── app.py
-        ├── requirements.txt
-        ├── README.md
-        ├── bert_fake_news/   # fine-tuned model directory
-        └── assets/
-        ```
-
-        ### Example requirements.txt
-        ```
-        streamlit
-        pandas
-        numpy
-        plotly
-        scikit-learn
-        transformers
-        torch
-        seaborn
-        ```
-
-        ### Deployment flow
-        1. Push code to GitHub  
-        2. Connect repo to Streamlit Community Cloud  
-        3. Set `app.py` as entry point  
-        4. Add model files or configure `MODEL_DIR`  
-        5. Deploy
-        ```
-        """
-    )
-
-    st.info(
-        "Tip: if model files are too large for GitHub, store them externally and download them at startup, or use Git LFS / Hugging Face Hub."
-    )
+    st.subheader("Deployment")
+    st.write("The app is deployed using GitHub and Streamlit Community Cloud, while the trained model is hosted on Hugging Face Hub.")
