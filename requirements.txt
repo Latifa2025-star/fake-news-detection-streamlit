@@ -5,4 +5,3 @@ plotly
 scikit-learn
 transformers
 torch
-seaborn
