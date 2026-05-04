@@ -13,7 +13,7 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-MODEL_NAME = "MODEL_NAME = "laitali2026/fake-news-bert-model"
+MODEL_NAME = "laitali2026/fake-news-bert-model"
 MAX_LEN = 512
 DEFAULT_THRESHOLD = 0.50
 
