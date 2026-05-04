@@ -1,17 +1,11 @@
-import os
-from typing import Dict, List, Tuple
-
 import numpy as np
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 import torch
-from transformers import AutoModelForSequenceClassification, AutoTokenizer
+from transformers import AutoTokenizer, AutoModelForSequenceClassification
 
-# =============================
-# Page setup
-# =============================
 st.set_page_config(
     page_title="Fake News Detection AI",
     page_icon="🧠",
@@ -19,13 +13,38 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# =============================
-# Custom CSS
-# =============================
+MODEL_NAME = "laitali2026/fake-news-bert-2epoch-model"
+MAX_LEN = 512
+DEFAULT_THRESHOLD = 0.50
+
+MODEL_METRICS = {
+    "Accuracy": 0.9890,
+    "Precision": 0.9882,
+    "Recall": 0.9901,
+    "F1 Score": 0.9892,
+}
+
+CONFUSION_MATRIX = pd.DataFrame(
+    [[974, 12], [10, 1004]],
+    index=["Actual Real", "Actual Fake"],
+    columns=["Predicted Real", "Predicted Fake"],
+)
+
+TRAINING_HISTORY = pd.DataFrame(
+    {
+        "Epoch": [1, 2],
+        "Training Loss": [0.1576, 0.0652],
+        "Validation Loss": [0.1689, 0.2098],
+        "Accuracy": [0.9578, 0.9599],
+        "Precision": [0.9438, 0.9719],
+        "Recall": [0.9700, 0.9439],
+        "F1": [0.9567, 0.9577],
+    }
+)
+
 st.markdown(
     """
     <style>
-    .block-container {padding-top: 1.3rem; padding-bottom: 2rem;}
     .main-title {
         font-size: 2.6rem;
         font-weight: 800;
@@ -36,82 +55,57 @@ st.markdown(
         font-size: 1.05rem;
         margin-bottom: 1.2rem;
     }
-    .card {
-        padding: 1.1rem;
-        border-radius: 18px;
-        border: 1px solid rgba(120,120,120,0.18);
-        background: rgba(250,250,250,0.04);
-    }
     .good {color: #16a34a; font-weight: 800;}
     .bad {color: #dc2626; font-weight: 800;}
-    .medium {color: #d97706; font-weight: 800;}
     </style>
     """,
     unsafe_allow_html=True,
 )
 
-# =============================
-# Constants
-# =============================
-MODEL_NAME = "laitali2026/fake-news-bert-model"
-MAX_LEN = 512
-DEFAULT_THRESHOLD = 0.50
-
-MODEL_METRICS = {
-    "Accuracy": 0.9638,
-    "Precision": 0.9663,
-    "Recall": 0.9575,
-    "F1 Score": 0.9619,
-}
-
-TRAINING_HISTORY = pd.DataFrame(
-    {
-        "Epoch": [1, 2, 3],
-        "Training Loss": [0.157617, 0.065196, 0.011758],
-        "Validation Loss": [0.168930, 0.209829, 0.243374],
-        "Accuracy": [0.957820, 0.959916, 0.961750],
-        "Precision": [0.943796, 0.971942, 0.957228],
-        "Recall": [0.970027, 0.943869, 0.963488],
-        "F1": [0.956732, 0.957700, 0.960348],
-    }
-)
-
-CONFUSION_MATRIX = pd.DataFrame(
-    [[974, 12], [10, 1004]],
-    index=["Actual Real", "Actual Fake"],
-    columns=["Predicted Real", "Predicted Fake"],
-)
-
-# =============================
-# Model loading
-# =============================
 @st.cache_resource(show_spinner=True)
 def load_model():
-    tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
+    tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME, use_fast=False)
     model = AutoModelForSequenceClassification.from_pretrained(MODEL_NAME)
     model.eval()
     return tokenizer, model
 
 
-def chunk_document(text: str, tokenizer, max_len: int = MAX_LEN) -> List[List[int]]:
+def chunk_document(text, tokenizer, max_len=512):
     token_ids = tokenizer.encode(str(text), add_special_tokens=False, truncation=False)
     chunk_size = max_len - 2
     chunks = []
 
     for i in range(0, len(token_ids), chunk_size):
-        chunk_tokens = token_ids[i : i + chunk_size]
+        chunk_tokens = token_ids[i:i + chunk_size]
         chunk_tokens = [tokenizer.cls_token_id] + chunk_tokens + [tokenizer.sep_token_id]
         chunks.append(chunk_tokens)
 
-    if len(chunks) == 0:
+    if not chunks:
         chunks = [[tokenizer.cls_token_id, tokenizer.sep_token_id]]
 
     return chunks
 
 
-def predict_article(text: str, threshold: float) -> Dict:
+def assign_risk(prob):
+    if prob >= 0.75:
+        return "High Risk"
+    if prob >= 0.50:
+        return "Medium Risk"
+    return "Low Risk"
+
+
+def recommend_action(risk):
+    if risk == "High Risk":
+        return "Immediate fact-checking recommended"
+    if risk == "Medium Risk":
+        return "Send to human reviewer"
+    return "No immediate action needed"
+
+
+def predict_article(text, threshold):
     tokenizer, model = load_model()
     chunks = chunk_document(text, tokenizer)
+
     fake_probs = []
 
     for chunk in chunks:
@@ -129,21 +123,27 @@ def predict_article(text: str, threshold: float) -> Dict:
         with torch.no_grad():
             logits = model(**inputs).logits
             probs = torch.softmax(logits, dim=1).cpu().numpy()[0]
-            fake_probs.append(float(probs[1]))
+
+        fake_probs.append(float(probs[1]))
 
     avg_fake_prob = float(np.mean(fake_probs))
     max_fake_prob = float(np.max(fake_probs))
-    predicted_label = int(avg_fake_prob >= threshold)
 
-    risk = assign_risk(avg_fake_prob)
+    # Use max probability so one suspicious chunk can flag the document.
+    final_fake_prob = max_fake_prob
+
+    predicted_label = int(final_fake_prob >= threshold)
+
+    risk = assign_risk(final_fake_prob)
     action = recommend_action(risk)
 
     return {
         "prediction": "Fake News" if predicted_label == 1 else "Real News",
         "predicted_label": predicted_label,
-        "fake_probability": avg_fake_prob,
-        "real_probability": 1 - avg_fake_prob,
+        "fake_probability": final_fake_prob,
+        "avg_fake_probability": avg_fake_prob,
         "max_fake_probability": max_fake_prob,
+        "real_probability": 1 - final_fake_prob,
         "num_chunks": len(chunks),
         "chunk_fake_probs": fake_probs,
         "risk": risk,
@@ -151,23 +151,7 @@ def predict_article(text: str, threshold: float) -> Dict:
     }
 
 
-def assign_risk(prob: float) -> str:
-    if prob >= 0.75:
-        return "High Risk"
-    if prob >= 0.50:
-        return "Medium Risk"
-    return "Low Risk"
-
-
-def recommend_action(risk: str) -> str:
-    if risk == "High Risk":
-        return "Immediate fact-checking recommended"
-    if risk == "Medium Risk":
-        return "Send to human reviewer"
-    return "No immediate action needed"
-
-
-def probability_gauge(fake_prob: float, threshold: float):
+def probability_gauge(fake_prob, threshold):
     fig = go.Figure(
         go.Indicator(
             mode="gauge+number",
@@ -194,7 +178,7 @@ def probability_gauge(fake_prob: float, threshold: float):
     return fig
 
 
-def chunk_chart(chunk_probs: List[float]):
+def chunk_chart(chunk_probs):
     df = pd.DataFrame(
         {
             "Chunk": list(range(1, len(chunk_probs) + 1)),
@@ -213,9 +197,7 @@ def chunk_chart(chunk_probs: List[float]):
     fig.update_layout(height=360)
     return fig
 
-# =============================
-# Sidebar
-# =============================
+
 st.sidebar.title("🧠 Fake News AI")
 st.sidebar.caption("BERT + chunk-based full-document analytics")
 
@@ -243,13 +225,10 @@ st.sidebar.markdown("---")
 st.sidebar.write("**Model:**")
 st.sidebar.code(MODEL_NAME)
 
-# =============================
-# Home
-# =============================
 if page == "Home":
     st.markdown('<div class="main-title">Fake News Detection AI Dashboard</div>', unsafe_allow_html=True)
     st.markdown(
-        '<div class="subtitle">A Streamlit web app using a fine-tuned BERT model with chunk-based document processing.</div>',
+        '<div class="subtitle">Fine-tuned 2-epoch BERT model with chunk-based document processing.</div>',
         unsafe_allow_html=True,
     )
 
@@ -265,13 +244,9 @@ if page == "Home":
     with left:
         st.subheader("Project Overview")
         st.write(
-            "This application detects fake news articles using a fine-tuned BERT transformer model. "
-            "Because BERT can only process 512 tokens at a time, long articles are split into chunks, "
-            "classified chunk-by-chunk, and then aggregated into one final document-level prediction."
-        )
-        st.write(
-            "The app supports real-time prediction, batch CSV prediction, model performance analytics, "
-            "and prescriptive recommendations for content moderation."
+            "This app detects fake news using a fine-tuned BERT transformer model. "
+            "Long articles are split into 512-token chunks, each chunk is classified, "
+            "and the chunk probabilities are combined into a final document-level prediction."
         )
 
     with right:
@@ -282,19 +257,16 @@ if page == "Home":
             2. Tokenize using BERT tokenizer  
             3. Split long text into 512-token chunks  
             4. Predict each chunk  
-            5. Average chunk probabilities  
+            5. Use the most suspicious chunk probability  
             6. Assign risk level and action
             """
         )
 
-# =============================
-# Single Article Prediction
-# =============================
 elif page == "Single Article Prediction":
     st.title("Single Article Prediction")
     st.caption("Paste a full news article or headline + body text.")
 
-    article_text = st.text_area("Article Text", height=300, placeholder="Paste article content here...")
+    article_text = st.text_area("Article Text", height=300)
 
     if st.button("Analyze Article", type="primary"):
         if not article_text.strip():
@@ -328,17 +300,12 @@ elif page == "Single Article Prediction":
             st.subheader("Chunk-Level Analysis")
             st.plotly_chart(chunk_chart(result["chunk_fake_probs"]), use_container_width=True)
 
-            chunk_df = pd.DataFrame(
-                {
-                    "Chunk": list(range(1, len(result["chunk_fake_probs"]) + 1)),
-                    "Fake Probability": result["chunk_fake_probs"],
-                }
-            )
-            st.dataframe(chunk_df, use_container_width=True, hide_index=True)
+            st.subheader("Debug: Model Probability Details")
+            st.write("Model used:", MODEL_NAME)
+            st.write("Average fake probability:", result["avg_fake_probability"])
+            st.write("Maximum fake probability:", result["max_fake_probability"])
+            st.write("Chunk fake probabilities:", result["chunk_fake_probs"])
 
-# =============================
-# Batch Prediction
-# =============================
 elif page == "Batch Prediction":
     st.title("Batch Prediction")
     st.caption("Upload a CSV file and predict many articles at once.")
@@ -351,7 +318,6 @@ elif page == "Batch Prediction":
         st.dataframe(data.head(), use_container_width=True)
 
         text_column = st.selectbox("Select text column", data.columns)
-
         max_rows = st.slider("Maximum rows to process", 1, min(100, len(data)), min(10, len(data)))
 
         if st.button("Run Batch Prediction", type="primary"):
@@ -364,6 +330,8 @@ elif page == "Batch Prediction":
                     {
                         "prediction": pred["prediction"],
                         "fake_probability": pred["fake_probability"],
+                        "avg_fake_probability": pred["avg_fake_probability"],
+                        "max_fake_probability": pred["max_fake_probability"],
                         "risk": pred["risk"],
                         "recommended_action": pred["action"],
                         "num_chunks": pred["num_chunks"],
@@ -382,11 +350,8 @@ elif page == "Batch Prediction":
                 mime="text/csv",
             )
 
-# =============================
-# Model Dashboard
-# =============================
 elif page == "Model Dashboard":
-    st.title("Model Dashboard")
+    st.title("Model Dashboard — 2 Epoch BERT Model")
 
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Accuracy", f"{MODEL_METRICS['Accuracy']:.2%}")
@@ -441,159 +406,48 @@ elif page == "Model Dashboard":
     )
     st.dataframe(hp, use_container_width=True, hide_index=True)
 
-# =============================
-# Four Analytics
-# =============================
 elif page == "Four Analytics":
-
     st.title("Four Analytics Framework")
 
     st.header("1. Descriptive Analytics — What happened?")
-
-    st.write("""
-    The WELFake dataset used in this project contains more than **72,000 labeled news articles** classified as real or fake news. 
-    After cleaning the dataset and removing missing values, the final dataset used for training contained approximately **71,500 articles**.
-
-    Each article was constructed by combining the **title and full article text**, allowing the model to analyze complete news content 
-    rather than isolated headlines.
-
-    The dataset was split using **stratified sampling** into:
-
-    • Training set — 70%  
-    • Validation set — 15%  
-    • Test set — 15%
-
-    After preprocessing and tokenization, the dataset expanded into chunk-level samples:
-
-    • Training chunks: ~15,386  
-    • Validation chunks: ~3,817  
-    • Test chunks: ~3,896  
-
-    The BERT model (bert-base-uncased) was fine-tuned on these chunks using the following hyperparameters:
-
-    • Learning rate: 2e-5  
-    • Batch size: 8  
-    • Epochs tested: 2 and 3  
-    • Weight decay: 0.01  
-
-    Final evaluation results achieved approximately:
-
-    • Accuracy: 96.38%  
-    • Precision: 96.63%  
-    • Recall: 95.75%  
-    • F1 Score: 96.19%
-
-    These results demonstrate strong performance in identifying linguistic patterns associated with misinformation.
-    """)
+    st.write(
+        """
+        The WELFake dataset contains more than 72,000 labeled articles.
+        After cleaning missing values, approximately 71,500 articles remained.
+        The title and article body were combined into a single content field.
+        """
+    )
 
     st.header("2. Diagnostic Analytics — Why did it happen?")
-
-    st.write("""
-    During dataset analysis, a key challenge emerged: **BERT has a maximum input length of 512 tokens**, while many real-world 
-    news articles are significantly longer.
-
-    When articles exceed this limit, BERT would normally truncate the text, potentially removing important contextual information.
-
-    To address this limitation, the project implemented a **chunk-based document processing strategy**.
-
-    The process works as follows:
-
-    1. Articles are tokenized using the BERT tokenizer.
-    2. Articles longer than 512 tokens are split into smaller segments (chunks).
-    3. Each chunk is processed independently by the BERT classifier.
-    4. Predictions from all chunks are aggregated to produce a final document-level probability.
-
-    This approach ensures that **the entire article is analyzed**, rather than only the first portion of the text.
-
-    Diagnostic evaluation through the confusion matrix showed strong performance:
-
-    • 974 real articles correctly classified  
-    • 1004 fake articles correctly classified  
-    • 12 real articles misclassified as fake  
-    • 10 fake articles misclassified as real  
-
-    These results confirm that the chunking strategy successfully preserves contextual information needed for accurate predictions.
-    """)
+    st.write(
+        """
+        Many articles exceeded BERT's 512-token input limit.
+        To solve this, articles were split into 512-token chunks so the model could process the full document.
+        """
+    )
 
     st.header("3. Predictive Analytics — What is likely to happen?")
-
-    st.write("""
-    Predictive analytics focuses on estimating the likelihood that a new article contains misinformation.
-
-    When a user submits an article through the application:
-
-    1. The article text is tokenized using the BERT tokenizer.
-    2. Long articles are divided into **512-token chunks**.
-    3. Each chunk is analyzed by the fine-tuned BERT classifier.
-    4. The model outputs probabilities for both classes:
-       • Real news probability
-       • Fake news probability
-    5. Probabilities across all chunks are averaged to produce a **final document-level prediction**.
-
-    For example, when testing a clearly misleading article about a miracle cure, the model produced:
-
-    • Fake probability: 99.98%  
-    • Real probability: 0.02%
-
-    The system therefore classified the article as **Fake News** with extremely high confidence.
-
-    This predictive capability allows the system to analyze new articles in real time and estimate the probability of misinformation.
-    """)
+    st.write(
+        """
+        The fine-tuned BERT model predicts the probability that an article is fake.
+        Each chunk is scored, and the most suspicious chunk is used to support the final risk decision.
+        """
+    )
 
     st.header("4. Prescriptive Analytics — What should be done?")
+    st.write(
+        """
+        Predictions are converted into risk levels:
+        Low Risk means no action, Medium Risk means human review, and High Risk means immediate fact-checking.
+        """
+    )
 
-    st.write("""
-    Prescriptive analytics converts predictions into **actionable recommendations**.
-
-    The system uses a configurable **fake news probability threshold** (default = 0.50) to determine classification outcomes.
-
-    Based on the predicted probability, the system assigns a risk category:
-
-    • Low Risk (Fake probability < 0.50)  
-      → Article likely legitimate, no action required.
-
-    • Medium Risk (0.50 – 0.75)  
-      → Article may require **human review**.
-
-    • High Risk (> 0.75)  
-      → Article likely misinformation, **immediate fact-checking recommended**.
-
-    For example, the system flagged a test article claiming a miracle cure as **High Risk**, recommending immediate verification.
-
-    This prescriptive layer transforms the predictive model into a **decision-support system** that can assist:
-
-    • news organizations  
-    • social media platforms  
-    • fact-checking agencies  
-    • content moderation teams
-
-    in prioritizing which articles should be reviewed for misinformation.
-    """)
-# =============================
-# About
-# =============================
 elif page == "About":
     st.title("About This Project")
     st.write(
-        "This project was developed as a master's-level data science project for fake news detection using NLP and deep learning. "
-        "It uses a fine-tuned BERT model trained on the WELFake dataset and deployed through Streamlit."
-    )
-
-    st.subheader("Technologies Used")
-    st.markdown(
-        """
-        - Python
-        - Streamlit
-        - Hugging Face Transformers
-        - PyTorch
-        - Plotly
-        - Pandas
-        - Scikit-learn
-        """
+        "This project uses a fine-tuned BERT model for fake news detection. "
+        "The model is hosted on Hugging Face and the web app is deployed with Streamlit."
     )
 
     st.subheader("Model")
     st.code(MODEL_NAME)
-
-    st.subheader("Deployment")
-    st.write("The app is deployed using GitHub and Streamlit Community Cloud, while the trained model is hosted on Hugging Face Hub.")
