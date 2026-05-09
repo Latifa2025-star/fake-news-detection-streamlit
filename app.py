@@ -412,33 +412,129 @@ elif page == "Four Analytics":
     st.header("1. Descriptive Analytics — What happened?")
     st.write(
         """
-        The WELFake dataset contains more than 72,000 labeled articles.
-        After cleaning missing values, approximately 71,500 articles remained.
-        The title and article body were combined into a single content field.
+        Descriptive analytics summarizes what was observed in the dataset and modeling process.
+
+        This project used the WELFake dataset, which originally contained more than 72,000 labeled news articles.
+        Each article included a title, article text, and a binary label indicating whether the article was real or fake.
+
+        After preprocessing and removing missing values, approximately 71,500 usable articles remained.
+        The title and article body were combined into one complete text field called content so the model could analyze
+        the full news article rather than only the headline.
+
+        The cleaned dataset was split into training, validation, and test sets using stratified sampling. This preserved
+        the distribution of real and fake news across all subsets.
+
+        The final modeling pipeline included:
+
+        • Training set for model learning  
+        • Validation set for monitoring performance during training  
+        • Test set for final evaluation on unseen data  
+
+        After tokenization and chunking, the article-level dataset was converted into chunk-level datasets:
+
+        • Training chunks: approximately 15,000+  
+        • Validation chunks: approximately 3,800+  
+        • Test chunks: approximately 3,800+  
+
+        The final BERT model achieved strong classification performance, with high accuracy, precision, recall, and F1-score.
+        This shows that the model learned meaningful text patterns that help distinguish real news from fake news.
         """
     )
 
     st.header("2. Diagnostic Analytics — Why did it happen?")
     st.write(
         """
-        Many articles exceeded BERT's 512-token input limit.
-        To solve this, articles were split into 512-token chunks so the model could process the full document.
+        Diagnostic analytics explains why certain challenges and results occurred during the project.
+
+        One of the main technical challenges was that BERT can only process a maximum of 512 tokens at a time.
+        Many news articles in the dataset were longer than this limit. If the articles were passed directly into BERT,
+        the model would only process the beginning of the article and ignore the rest.
+
+        To solve this issue, a chunk-based processing strategy was implemented.
+
+        The process works as follows:
+
+        1. The full article is tokenized using the BERT tokenizer.
+        2. Long articles are split into smaller 512-token chunks.
+        3. Each chunk is passed into the BERT classifier independently.
+        4. The fake-news probabilities from the chunks are combined into one final document-level prediction.
+
+        This approach helps preserve more information from long articles and avoids losing important context.
+
+        Another important diagnostic finding came from the model evaluation. The confusion matrix showed that the model
+        correctly classified most real and fake articles, with only a small number of misclassifications. This suggests
+        that the model learned strong linguistic patterns from the dataset.
+
+        The training results also showed that increasing the number of epochs does not always improve generalization.
+        The 2-epoch model produced very strong results, while the 3-epoch model showed slightly lower test performance
+        and higher validation loss, suggesting possible overfitting.
         """
     )
 
     st.header("3. Predictive Analytics — What is likely to happen?")
     st.write(
         """
-        The fine-tuned BERT model predicts the probability that an article is fake.
-        Each chunk is scored, and the most suspicious chunk is used to support the final risk decision.
+        Predictive analytics focuses on using the trained model to classify new, unseen news articles.
+
+        When a user enters an article into the web app, the system predicts whether the article is likely to be real or fake.
+        The model outputs a fake-news probability between 0 and 1.
+
+        For example:
+
+        • A low fake probability suggests the article is likely real.  
+        • A high fake probability suggests the article is likely fake.  
+
+        The prediction workflow is:
+
+        1. The user enters or uploads article text.
+        2. The text is tokenized using the BERT tokenizer.
+        3. If the article is long, it is divided into BERT-compatible chunks.
+        4. Each chunk receives a fake-news probability.
+        5. The chunk probabilities are used to produce the final prediction.
+        6. The app displays the prediction, probability score, risk level, and recommendation.
+
+        This allows the system to move beyond static model evaluation and perform real-time fake news detection.
+
+        The web app supports both:
+
+        • Single article prediction  
+        • Batch prediction using CSV files  
+
+        This makes the model useful not only for testing one article, but also for analyzing multiple articles at once.
         """
     )
 
     st.header("4. Prescriptive Analytics — What should be done?")
     st.write(
         """
-        Predictions are converted into risk levels:
-        Low Risk means no action, Medium Risk means human review, and High Risk means immediate fact-checking.
+        Prescriptive analytics converts model predictions into practical actions.
+
+        Instead of only saying whether an article is real or fake, the app assigns a risk level based on the fake-news probability.
+        This makes the system easier to use as a decision-support tool.
+
+        The default threshold is 0.50:
+
+        • Fake probability below 0.50 → Low Risk  
+        • Fake probability between 0.50 and 0.75 → Medium Risk  
+        • Fake probability above 0.75 → High Risk  
+
+        Each risk level is connected to a recommended action:
+
+        • Low Risk: No immediate action needed  
+        • Medium Risk: Send to human reviewer  
+        • High Risk: Immediate fact-checking recommended  
+
+        This is important because fake news detection should not only provide predictions; it should also help users decide
+        what to do next.
+
+        In a real-world setting, this type of system could support:
+
+        • News organizations checking article credibility  
+        • Social media platforms flagging suspicious content  
+        • Fact-checking teams prioritizing high-risk articles  
+        • Researchers studying misinformation patterns  
+
+        The prescriptive layer turns the BERT model into a practical decision-support system rather than just a classification model.
         """
     )
 
